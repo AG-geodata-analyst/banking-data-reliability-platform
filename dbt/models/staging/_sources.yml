@@ -1,0 +1,9 @@
+version: 2
+
+sources:
+  - name: staging
+    schema: staging
+    tables:
+      - name: customers
+      - name: accounts
+      - name: transactions

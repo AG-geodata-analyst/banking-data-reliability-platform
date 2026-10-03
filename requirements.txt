@@ -16,3 +16,7 @@ requests==2.32.3
 # Testing
 pytest==8.3.4
 pytest-cov==6.0.0
+
+# dbt for analytical transformations (Version 2)
+dbt-core==1.9.0
+dbt-postgres==1.9.0
