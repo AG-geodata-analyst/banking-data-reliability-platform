@@ -53,10 +53,3 @@ CREATE TABLE IF NOT EXISTS analytics.daily_transaction_metrics (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- OPS: pipeline metadata (used in V2/V3)
-CREATE TABLE IF NOT EXISTS ops.pipeline_runs (
-    run_id SERIAL PRIMARY KEY, dag_run_id TEXT,
-    started_at TIMESTAMPTZ NOT NULL, finished_at TIMESTAMPTZ,
-    status TEXT, records_extracted INTEGER DEFAULT 0,
-    records_loaded INTEGER DEFAULT 0, records_rejected INTEGER DEFAULT 0
-);
