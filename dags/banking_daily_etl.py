@@ -1,9 +1,11 @@
 """
-Banking Data Reliability Platform — Version 2 DAG
+Banking Data Reliability Platform — Version 3 DAG
 
 Pipeline:
-    generate -> load_raw -> validate_transform_load -> quarantine_rejects
-             -> dbt_run -> dbt_test -> quality_check -> compute_metrics
+    start_run -> generate -> load_raw -> validate_transform_load
+              -> quarantine_rejects -> dbt_run -> dbt_test
+              -> quality_check -> reconciliation -> schema_drift
+              -> compute_metrics -> finish_run
 """
 import sys
 from datetime import timedelta
@@ -18,10 +20,11 @@ project_root = str(Path(__file__).resolve().parent.parent)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from src.generators.synthetic_banking import generate_all  # noqa: E402
+from src.generators.synthetic_banking import generate_all          # noqa: E402
+from src.utils import reliability as rel                             # noqa: E402
 
-DATA_DIR   = Path("/opt/airflow/data")
-DBT_DIR    = Path("/opt/airflow/dbt")
+DATA_DIR = Path("/opt/airflow/data")
+DBT_DIR = Path("/opt/airflow/dbt")
 DBT_PROFILES_DIR = "/opt/airflow/dbt"
 
 
@@ -30,11 +33,24 @@ DBT_PROFILES_DIR = "/opt/airflow/dbt"
     start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
     schedule="0 2 * * *",
     catchup=False,
-    tags=["banking", "etl", "v2"],
-    default_args={"retries": 2, "retry_delay": timedelta(minutes=2)},
+    tags=["banking", "etl", "v3"],
+    default_args={"retries": 3, "retry_delay": timedelta(minutes=2),
+                  "retry_exponential_backoff": True},
 )
 def banking_daily_etl():
 
+    # ----------------------------------------------------------------
+    # Monitoring — start
+    # ----------------------------------------------------------------
+    @task
+    def start_run(**kwargs) -> str:
+        dag_run_id = kwargs["run_id"]
+        rel.start_pipeline_run(dag_run_id, "banking_daily_etl")
+        return dag_run_id
+
+    # ----------------------------------------------------------------
+    # Core pipeline
+    # ----------------------------------------------------------------
     @task
     def generate_synthetic_data() -> dict:
         summary = generate_all()
@@ -52,7 +68,8 @@ def banking_daily_etl():
                 p = DATA_DIR / "raw" / name
                 with p.open("r", encoding="utf-8") as f:
                     cur.copy_expert(
-                        f"COPY raw.{table} ({', '.join(cols)}) FROM STDIN WITH CSV HEADER", f
+                        f"COPY raw.{table} ({', '.join(cols)}) FROM STDIN WITH CSV HEADER",
+                        f,
                     )
                 print(f"[load_raw] Loaded {name} → raw.{table}")
 
@@ -118,12 +135,10 @@ def banking_daily_etl():
 
     @task
     def quarantine_rejects(summary: dict) -> int:
-        """Move rejected raw transactions into quarantine.transactions."""
         pg = PostgresHook(postgres_conn_id="postgres_banking")
         with pg.get_conn() as conn, conn.cursor() as cur:
             cur.execute("TRUNCATE quarantine.transactions;")
 
-            # Negative amounts
             cur.execute("""
                 INSERT INTO quarantine.transactions
                     (transaction_id, account_id, transaction_date, amount,
@@ -133,8 +148,6 @@ def banking_daily_etl():
                 FROM raw.transactions
                 WHERE amount::numeric <= 0;
             """)
-
-            # Orphan account
             cur.execute("""
                 INSERT INTO quarantine.transactions
                     (transaction_id, account_id, transaction_date, amount,
@@ -145,8 +158,6 @@ def banking_daily_etl():
                 LEFT JOIN staging.accounts a ON a.account_id = t.account_id
                 WHERE a.account_id IS NULL;
             """)
-
-            # Duplicates (keep the first, quarantine the rest)
             cur.execute("""
                 WITH dupes AS (
                     SELECT transaction_id, account_id, transaction_date, amount,
@@ -163,7 +174,6 @@ def banking_daily_etl():
                        currency, status, merchant, 'duplicate_transaction_id'
                 FROM dupes WHERE rn > 1;
             """)
-
             cur.execute("SELECT COUNT(*) FROM quarantine.transactions;")
             count = cur.fetchone()[0]
         print(f"[quarantine_rejects] {count} rows quarantined")
@@ -171,23 +181,22 @@ def banking_daily_etl():
 
     dbt_run = BashOperator(
         task_id="dbt_run",
-        bash_command=(
-            f"cd {DBT_DIR} && "
-            f"dbt run --profiles-dir {DBT_PROFILES_DIR} --no-version-check"
-        ),
+        bash_command=f"cd {DBT_DIR} && dbt run --profiles-dir {DBT_PROFILES_DIR} --no-version-check",
+        retries=2,
     )
 
     dbt_test = BashOperator(
         task_id="dbt_test",
-        bash_command=(
-            f"cd {DBT_DIR} && "
-            f"dbt test --profiles-dir {DBT_PROFILES_DIR} --no-version-check"
-        ),
+        bash_command=f"cd {DBT_DIR} && dbt test --profiles-dir {DBT_PROFILES_DIR} --no-version-check",
+        retries=1,
     )
 
+    # ----------------------------------------------------------------
+    # Quality check — records individual checks to ops.quality_checks
+    # ----------------------------------------------------------------
     @task
-    def quality_check(quarantine_count: int) -> None:
-        """Fail if quality drops below acceptable thresholds."""
+    def quality_check(quarantine_count: int, **kwargs) -> dict:
+        dag_run_id = kwargs["run_id"]
         pg = PostgresHook(postgres_conn_id="postgres_banking")
         with pg.get_conn() as conn, conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM raw.transactions;")
@@ -198,22 +207,54 @@ def banking_daily_etl():
 
             reject_rate = quarantine_count / raw_count if raw_count else 1.0
 
-            checks = {
-                "fact_table_populated":    fact_count > 0,
-                "reject_rate_below_10pct": reject_rate < 0.10,
-                "no_null_customer_in_fact": (
-                    cur.execute("""
-                        SELECT COUNT(*) FROM analytics.fact_transactions
-                        WHERE customer_id IS NULL;
-                    """) or cur.fetchone()[0] == 0
-                ),
-            }
+            checks = [
+                ("fact_table_populated",      fact_count > 0,     fact_count,     ">0"),
+                ("reject_rate_below_10pct",   reject_rate < 0.10, f"{reject_rate:.4f}", "<0.10"),
+                ("raw_to_fact_reasonable",    fact_count >= raw_count * 0.90,
+                                              f"{fact_count}/{raw_count}", "≥90%"),
+            ]
 
-        failed = [k for k, ok in checks.items() if not ok]
+            failed = []
+            for name, ok, obs, exp in checks:
+                rel.record_quality_check(dag_run_id, name, ok, obs, exp)
+                if not ok:
+                    failed.append(name)
+
         if failed:
             raise ValueError(f"Quality checks failed: {failed}")
-        print(f"[quality_check] All checks passed (reject rate {reject_rate:.2%})")
+        print(f"[quality_check] All {len(checks)} checks passed (reject rate {reject_rate:.2%})")
+        return {"fact_count": fact_count, "raw_count": raw_count}
 
+    # ----------------------------------------------------------------
+    # Reconciliation
+    # ----------------------------------------------------------------
+    @task
+    def reconciliation(_: dict, **kwargs) -> None:
+        dag_run_id = kwargs["run_id"]
+        results = rel.reconcile_totals(dag_run_id)
+        failed = [r for r in results if r["status"] == "failed"]
+        if failed:
+            raise ValueError(f"Reconciliation failed for: {[r['metric'] for r in failed]}")
+        print(f"[reconciliation] All {len(results)} metrics reconciled")
+
+    # ----------------------------------------------------------------
+    # Schema drift detection
+    # ----------------------------------------------------------------
+    @task
+    def schema_drift(**kwargs) -> None:
+        dag_run_id = kwargs["run_id"]
+        for table in ("customers", "accounts", "transactions"):
+            cols = rel.capture_schema_snapshot(dag_run_id, table)
+            result = rel.detect_schema_drift(dag_run_id, table, cols)
+            if result["drift"]:
+                raise ValueError(
+                    f"Schema drift detected on raw.{table}: "
+                    f"added={result['added']} removed={result['removed']}"
+                )
+
+    # ----------------------------------------------------------------
+    # Business metrics
+    # ----------------------------------------------------------------
     @task
     def compute_metrics(_: None) -> int:
         pg = PostgresHook(postgres_conn_id="postgres_banking")
@@ -247,14 +288,47 @@ def banking_daily_etl():
         print(f"[compute_metrics] Wrote {rows} daily metric rows")
         return rows
 
-    # Wire the graph
-    summary     = generate_synthetic_data()
-    loaded_raw  = load_raw(summary)
-    staged      = validate_transform_load(loaded_raw)
+    # ----------------------------------------------------------------
+    # Monitoring — finish (runs even if upstream failed)
+    # ----------------------------------------------------------------
+    @task(trigger_rule="all_done")
+    def finish_run(generate_summary: dict, quarantine_count: int, **kwargs) -> None:
+        dag_run_id = kwargs["run_id"]
+
+        # In Airflow 3, the DAG run object is provided via the task context
+        dag_run = kwargs.get("dag_run")
+        if dag_run is not None and dag_run.state == "failed":
+            status = "failed"
+        else:
+            status = "success"
+
+        rel.finish_pipeline_run(
+            dag_run_id=dag_run_id,
+            status=status,
+            records_extracted=(generate_summary or {}).get("transactions", 0),
+            records_loaded=0,
+            records_quarantined=quarantine_count or 0,
+        )
+
+    # ----------------------------------------------------------------
+    # Wiring
+    # ----------------------------------------------------------------
+    run_id = start_run()
+    summary = generate_synthetic_data()
+    loaded_raw = load_raw(summary)
+    staged = validate_transform_load(loaded_raw)
     quarantined = quarantine_rejects(staged)
 
+    run_id >> summary
     staged >> quarantined >> dbt_run >> dbt_test
-    dbt_test >> quality_check(quarantined) >> compute_metrics(None)
+
+    qc_result = quality_check(quarantined)
+    recon = reconciliation(qc_result)
+    drift = schema_drift()
+    metrics = compute_metrics(None)
+
+    dbt_test >> qc_result >> recon >> drift >> metrics
+    finish_run(summary, quarantined)
 
 
 banking_daily_etl()
