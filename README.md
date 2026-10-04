@@ -5,6 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
 [![Airflow 3.1](https://img.shields.io/badge/airflow-3.1-017cee.svg)](https://airflow.apache.org/)
+[![dbt 1.9](https://img.shields.io/badge/dbt-1.9-FF694B.svg)](https://www.getdbt.com/)
 [![PostgreSQL 16](https://img.shields.io/badge/postgres-16-336791.svg)](https://www.postgresql.org/)
 [![Docker](https://img.shields.io/badge/docker-compose-2496ED.svg)](https://docs.docker.com/compose/)
 
@@ -41,13 +42,17 @@ That is exactly what this platform does.
 
 This project is not three separate projects — it's **one repository that evolves**.
 
-### Version 1 — Basic Reliable ETL Pipeline *(current)*
+- [x] **Version 1** — Basic reliable ETL pipeline
+- [x] **Version 2** — Trusted data & analytical layer
+- [x] **Version 3** — Production-style reliability platform
+
+### Version 1 — Basic Reliable ETL Pipeline
 
 **Question answered:** *Can I build an automated end-to-end data pipeline?*
 
 - Synthetic banking data (customers, accounts, transactions) generated with Faker
-- Airflow DAG orchestrates extract → validate → transform → load
-- PostgreSQL stores raw, staging, and analytics layers
+- Airflow DAG orchestrates generate → load → validate → transform
+- PostgreSQL stores `raw`, `staging`, and `analytics` layers
 - Basic data quality rules (positive amounts, referential integrity, unique IDs)
 - Simple daily KPIs
 
@@ -55,63 +60,82 @@ This project is not three separate projects — it's **one repository that evolv
 
 **Question answered:** *Can I build a trustworthy analytical system?*
 
-- dbt transformations with documented models
-- Dimensional model: `fact_transactions` + `dim_customer`, `dim_account`, `dim_product`, `dim_date`
-- Quarantine tables for rejected records
-- Formal data quality checks (completeness, uniqueness, referential integrity, validity, freshness, consistency)
-- Expanded business KPIs and BI dashboard
+- **dbt** transformations with documented models and schema tests
+- Dimensional model: `fact_transactions` + `dim_customer`, `dim_account`, `dim_date`
+- `quarantine.transactions` table with a `reject_reason` for every rejected row
+- dbt tests: uniqueness, not-null, accepted values, referential integrity (9/9 passing)
+- Expanded business KPIs built from the star schema
 
 ### Version 3 — Production-Style Reliability Platform
 
 **Question answered:** *Can I build a reliable production-style platform?*
 
-- Pipeline monitoring (`ops.pipeline_runs` table)
-- Reconciliation between source totals and warehouse totals
-- Schema-drift detection
-- Retry handling with exponential backoff
-- Idempotent processing (safe re-runs)
-- Alerting on quality failures
-- Operational "pipeline health" dashboard
+- **Pipeline monitoring** — every run recorded in `ops.pipeline_runs` with duration, counts, and status
+- **Reconciliation** — source-side totals compared against warehouse-side totals, with tolerance thresholds
+- **Schema-drift detection** — compares raw table columns to the previous run's snapshot
+- **Quality-check audit trail** — one row per check per run in `ops.quality_checks`
+- **Retries with exponential backoff** on all tasks
+- **Idempotent processing** — safe to re-run any date
+- **Live Streamlit dashboard** showing KPIs, pipeline health, trends, and reconciliation
 
 ---
 
-## 🏗️ Target Architecture (end of Version 3)
+## 🏗️ Architecture
 
 ```
-Source systems (synthetic generator + public APIs)
+Source systems (synthetic generator with injected errors)
         │
         ▼
-Apache Airflow (orchestration)
+Apache Airflow (LocalExecutor, Docker Compose)
         │
         ▼
-Raw ingestion
+Raw ingestion → raw.* schema (untyped landing zone)
         │
         ▼
-Validation  ──►  Quarantine (bad records)
+Validation  ──►  Quarantine (rejected rows with reason)
         │
         ▼
-PostgreSQL — raw & staging schemas
+PostgreSQL — staging schema (typed, cleaned)
         │
         ▼
 dbt transformations
         │
         ▼
-Analytical model (fact + dimensions)
+Analytical model — fact_transactions + dimensions
         │
         ▼
-Quality checks + Reconciliation
+Quality checks · Reconciliation · Schema-drift detection
         │
         ▼
 Business KPIs  +  Pipeline-health metrics
         │
         ▼
-BI Dashboard (Streamlit)
-        │
-        ▼
-GitHub Actions (daily automated runs)
-
-Sidecar: logging · monitoring · retries · alerts
+Streamlit dashboard (KPIs + pipeline health)
 ```
+
+### Airflow DAG (12 tasks)
+
+```
+start_run → generate_synthetic_data → load_raw → validate_transform_load
+         → quarantine_rejects → dbt_run → dbt_test → quality_check
+         → reconciliation → schema_drift → compute_metrics → finish_run
+```
+
+---
+
+## 📊 Live Dashboard
+
+The platform ships with a Streamlit dashboard that shows both the **business side** (KPIs, trends) and the **operational side** (pipeline health, reconciliation).
+
+Open **http://localhost:8502** after `docker compose up -d`.
+
+| Panel | Content |
+|---|---|
+| **KPI cards** | Total transactions · Total value · Customers · Accounts · Quarantined |
+| **Pipeline health** | Last 10 runs with status, records extracted, duration |
+| **Daily value trend** | Line chart of daily transaction value |
+| **Quarantine breakdown** | Bar chart by reject reason |
+| **Latest reconciliation** | Source vs target totals with variance % |
 
 ---
 
@@ -123,11 +147,11 @@ Sidecar: logging · monitoring · retries · alerts
 | Language | Python 3.12 |
 | Database | PostgreSQL 16 |
 | Data generation | Faker |
-| Transformations | pandas (V1) → dbt-core (V2+) |
-| Testing | pytest |
+| Transformations | pandas (V1) → dbt-core 1.9 (V2+) |
+| Testing | dbt schema tests, pytest |
 | Containerization | Docker Compose |
-| CI/CD | GitHub Actions |
-| Dashboard | Streamlit (V2+) |
+| Dashboard | Streamlit 1.46 + Plotly |
+| CI/CD | GitHub Actions (planned) |
 
 ---
 
@@ -135,21 +159,34 @@ Sidecar: logging · monitoring · retries · alerts
 
 ```
 banking-data-reliability-platform/
-├── dags/                          # Airflow DAGs
-├── src/                           # Python source code
-│   ├── __init__.py
-│   ├── generators/                # Synthetic data generation (V1)
-│   ├── validators/                # Data quality rules (V2+)
-│   └── utils/                     # Shared helpers
-├── sql/                           # SQL schemas and migrations
-├── data/                          # Generated artifacts (gitignored)
-│   ├── raw/
-│   ├── processed/
-│   └── quarantine/
-├── docker/                        # Dockerfile
-├── config/                        # Airflow config + auth
-├── tests/                         # pytest tests
-├── .github/workflows/             # CI/CD
+├── dags/
+│   └── banking_daily_etl.py          # 12-task Airflow DAG
+├── src/
+│   ├── generators/
+│   │   └── synthetic_banking.py      # Faker-based generator with error injection
+│   └── utils/
+│       └── reliability.py            # Monitoring, reconciliation, drift helpers
+├── dbt/
+│   ├── dbt_project.yml
+│   ├── profiles.yml
+│   ├── macros/
+│   │   └── generate_schema_name.sql  # Prevent dbt_ schema prefixing
+│   └── models/
+│       ├── staging/                  # 3 staging views
+│       └── marts/                    # 3 dims + 1 fact + schema.yml (9 tests)
+├── sql/
+│   ├── schema.sql                    # raw / staging / analytics / ops
+│   ├── quarantine.sql                # quarantine.transactions
+│   └── ops.sql                       # monitoring tables
+├── dashboard/
+│   └── app.py                        # Streamlit dashboard
+├── data/                             # Generated artifacts (gitignored)
+├── docker/
+│   └── Dockerfile
+├── config/
+│   └── simple_auth_manager_passwords.json.generated
+├── tests/
+├── .github/workflows/
 ├── docker-compose.yml
 ├── requirements.txt
 ├── .env.example
@@ -193,28 +230,26 @@ Wait for `airflow-init` to exit with code 0.
 docker compose up -d
 ```
 
-### 4. Open the Airflow UI
+### 4. Open the UIs
 
-```
-http://localhost:8081
-```
+| Service | URL | Credentials |
+|---|---|---|
+| Airflow | http://localhost:8081 | `admin` / `admin` |
+| Streamlit | http://localhost:8502 | — |
 
-Login with:
+> If the Airflow login fails, check `config/simple_auth_manager_passwords.json.generated` — it should contain `{"admin": "admin"}`.
 
-| Username | Password |
-|---|---|
-| `admin` | `admin` |
-
-> If the login fails, check `config/simple_auth_manager_passwords.json.generated` — it should contain `{"admin": "admin"}`.
-
-### 5. Verify the stack is healthy
+### 5. Run the pipeline
 
 ```bash
-docker compose ps
-docker compose exec airflow-webserver curl -s http://localhost:8080/api/v2/monitor/health
+docker compose exec airflow-scheduler airflow dags test banking_daily_etl $(date +%Y-%m-%d)
 ```
 
-All 5 services should be `(healthy)` or `Up`.
+Expected final line:
+
+```
+DagRun Finished: dag_id=banking_daily_etl, ... state=success
+```
 
 ### 6. Stop everything
 
@@ -225,52 +260,81 @@ docker compose down -v       # stop + wipe database
 
 ---
 
-## 📊 Data Model (Version 1)
+## 🗄️ Data Model
 
 ### Schemas
 
 | Schema | Purpose |
 |---|---|
 | `raw` | Data exactly as it arrived (all columns as TEXT) |
-| `staging` | Cleaned, typed, validated data ready for analytics |
-| `analytics` | Business-facing metrics and aggregated tables |
-| `ops` | Pipeline metadata (run history, quality results) |
+| `staging` | Typed, cleaned, validated data (dbt views) |
+| `analytics` | Business-facing star schema and KPIs |
+| `quarantine` | Rejected rows with a documented reason |
+| `ops` | Pipeline metadata — runs, checks, reconciliation, schema snapshots |
 
-### Tables (planned)
+### Tables
 
 | Table | Layer | Purpose |
 |---|---|---|
 | `raw.customers` | Raw | Untyped landing zone |
 | `raw.accounts` | Raw | Untyped landing zone |
 | `raw.transactions` | Raw | Untyped landing zone |
-| `staging.customers` | Staging | Typed, deduplicated |
-| `staging.accounts` | Staging | Typed, referentially validated |
-| `staging.transactions` | Staging | Typed, positive amounts only, no orphans |
-| `analytics.daily_transaction_metrics` | Analytics | KPIs per day |
+| `staging.stg_customers` | Staging | Typed customer view |
+| `staging.stg_accounts` | Staging | Typed accounts view |
+| `staging.stg_transactions` | Staging | Typed, positive amounts only |
+| `analytics.dim_customer` | Analytics | Customer dimension |
+| `analytics.dim_account` | Analytics | Account dimension (joined to customer) |
+| `analytics.dim_date` | Analytics | Date dimension (2024–2027) |
+| `analytics.fact_transactions` | Analytics | One row per accepted transaction |
+| `analytics.daily_transaction_metrics` | Analytics | Daily business KPIs |
+| `quarantine.transactions` | Quarantine | Rejected rows with `reject_reason` |
+| `ops.pipeline_runs` | Ops | One row per DAG run |
+| `ops.quality_checks` | Ops | One row per check per run |
+| `ops.reconciliation` | Ops | Source-vs-target metric comparisons |
+| `ops.schema_snapshots` | Ops | Raw column snapshots per run |
 
 ---
 
 ## 🧪 Example Queries
 
-Once the pipeline has run:
-
 ```sql
--- Row counts by layer
+-- Row counts across every layer
 SELECT
-    (SELECT COUNT(*) FROM raw.transactions)     AS raw_rows,
-    (SELECT COUNT(*) FROM staging.transactions) AS staging_rows;
+    (SELECT COUNT(*) FROM raw.transactions)              AS raw_rows,
+    (SELECT COUNT(*) FROM staging.stg_transactions)      AS staging_rows,
+    (SELECT COUNT(*) FROM analytics.fact_transactions)   AS fact_rows,
+    (SELECT COUNT(*) FROM quarantine.transactions)       AS quarantined_rows;
 
 -- Daily KPIs
 SELECT * FROM analytics.daily_transaction_metrics
 ORDER BY metric_date DESC LIMIT 10;
 
--- Data-quality drop-off
+-- Business rollup by country
 SELECT
-    ROUND(
-        100.0 * (SELECT COUNT(*) FROM staging.transactions)
-        / NULLIF((SELECT COUNT(*) FROM raw.transactions), 0),
-        2
-    ) AS staging_success_rate_pct;
+    dc.country,
+    COUNT(*)                        AS txns,
+    ROUND(SUM(ft.amount), 2)        AS total_value
+FROM analytics.fact_transactions ft
+LEFT JOIN analytics.dim_customer dc USING (customer_id)
+GROUP BY dc.country
+ORDER BY total_value DESC;
+
+-- Pipeline health — last 5 runs
+SELECT run_id, started_at, status, records_extracted, duration_seconds
+FROM ops.pipeline_runs
+ORDER BY started_at DESC LIMIT 5;
+
+-- Quarantine breakdown
+SELECT reject_reason, COUNT(*)
+FROM quarantine.transactions
+GROUP BY reject_reason
+ORDER BY 2 DESC;
+
+-- Latest reconciliation
+SELECT DISTINCT ON (metric_name)
+    metric_name, source_value, target_value, variance_pct, status
+FROM ops.reconciliation
+ORDER BY metric_name, checked_at DESC;
 ```
 
 ---
@@ -279,28 +343,33 @@ SELECT
 
 | Decision | Rationale |
 |---|---|
-| **Synthetic data (Faker) with injected errors** | Demonstrates validation and quarantine logic without touching real customer data (GDPR) |
-| **Four-layer schema** (`raw` / `staging` / `analytics` / `ops`) | Mirrors a real data-warehouse design; each layer has a clear purpose |
+| **Synthetic data with injected errors** | Demonstrates validation and quarantine logic without touching real customer data (GDPR) |
+| **Five-layer schema** (`raw` / `staging` / `analytics` / `quarantine` / `ops`) | Mirrors a real data-warehouse design; each layer has a clear purpose |
+| **Quarantine instead of deletion** | Bad rows should be investigated, not silently dropped |
+| **dbt for transformations** | Declarative, testable, documented models; schema tests run in CI |
+| **`generate_schema_name` macro** | Prevents dbt's default `dbt_` schema prefix so tables land exactly where intended |
 | **Docker Compose** | Reproducible environment — anyone can run the project with one command |
-| **LocalExecutor** | Simplest executor supporting parallel tasks; no Celery/Redis overhead for a portfolio project |
-| **Custom ports** (8081, 5433) | Allows this project to coexist with other local Airflow/Postgres instances |
+| **Custom ports** (8081, 5433, 8502) | Allows this project to coexist with other local Airflow/Postgres instances |
 | **Airflow 3.1.3** | Latest stable major version; exercises modern features (api-server, TaskFlow) |
-| **Versioned roadmap** | Each version is a concrete, portfolio-worthy milestone — not a vague future plan |
+| **Exponential-backoff retries** | Transient failures should not require manual intervention |
+| **Idempotent processing** | Re-running the same date is always safe |
+| **Versioned roadmap** | Each version is a concrete, portfolio-worthy milestone |
 
 ---
 
 ## 🛣️ Roadmap
 
 - [x] **Scaffolding** — Docker Compose stack, ports, folder structure, README
-- [ ] **Version 1** — Basic reliable ETL pipeline
-- [ ] **Version 2** — dbt + data quality + dimensional model + BI
-- [ ] **Version 3** — Monitoring, reconciliation, schema drift, alerting
+- [x] **Version 1** — Basic reliable ETL pipeline
+- [x] **Version 2** — dbt + data quality + dimensional model + BI
+- [x] **Version 3** — Monitoring, reconciliation, schema drift, dashboard
+- [ ] **Future** — GitHub Actions CI/CD, alerting (Slack/email), Docker Hub image, cloud deployment
 
 ---
 
-## 🤝 Contributing
+## 🧾 What a recruiter sees
 
-This is a personal portfolio project, but the structure is designed to be readable for anyone reviewing it. If you find a bug or have a suggestion, feel free to open an issue.
+> *"Built a production-style banking data platform with Airflow orchestration, dbt transformations, dimensional modeling, automated quality gates, reconciliation, schema-drift detection, and a live operational dashboard — all containerized with Docker Compose."*
 
 ---
 
@@ -326,4 +395,4 @@ Currently focused on data engineering, data quality, and analytics engineering.
 - GitHub: [@AG-geodata-analyst](https://github.com/AG-geodata-analyst)
 - Related project: [Estonia Environmental Forecast Monitor](https://github.com/AG-geodata-analyst/EE-environmental-monitor)
 
-*Built with Apache Airflow, PostgreSQL, and Docker.*
+*Built with Apache Airflow, dbt, PostgreSQL, Docker, and Streamlit.*
