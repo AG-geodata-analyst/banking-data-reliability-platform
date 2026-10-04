@@ -1,11 +1,11 @@
 """
-Banking Data Reliability Platform — Version 3 DAG
+Banking Data Reliability Platform — Version 4 DAG
 
 Pipeline:
     start_run -> generate -> load_raw -> validate_transform_load
               -> quarantine_rejects -> dbt_run -> dbt_test
               -> quality_check -> reconciliation -> schema_drift
-              -> compute_metrics -> finish_run
+              -> compute_metrics -> publish_snapshot -> finish_run
 """
 import sys
 from datetime import timedelta
@@ -33,7 +33,7 @@ DBT_PROFILES_DIR = "/opt/airflow/dbt"
     start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
     schedule="0 2 * * *",
     catchup=False,
-    tags=["banking", "etl", "v3"],
+    tags=["banking", "etl", "v4"],
     default_args={"retries": 3, "retry_delay": timedelta(minutes=2),
                   "retry_exponential_backoff": True},
 )
@@ -289,6 +289,85 @@ def banking_daily_etl():
         return rows
 
     # ----------------------------------------------------------------
+    # Publish CSV snapshots for the Streamlit dashboard
+    # ----------------------------------------------------------------
+    @task
+    def publish_snapshot(_: int) -> dict:
+        """Write CSV snapshots that Streamlit Cloud can read."""
+        import csv
+
+        snapshot_dir = Path("/opt/airflow/dashboard/data/synthetic")
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+        pg = PostgresHook(postgres_conn_id="postgres_banking")
+
+        # 1. Fact transactions — the main analytical table
+        rows = pg.get_records("""
+            SELECT transaction_id, account_id, customer_id, customer_country,
+                   account_type, transaction_date, amount, currency, status, merchant
+            FROM analytics.fact_transactions
+            ORDER BY transaction_date DESC
+            LIMIT 20000;
+        """)
+        fact_path = snapshot_dir / "fact_transactions.csv"
+        with fact_path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["transaction_id", "account_id", "customer_id",
+                        "customer_country", "account_type", "transaction_date",
+                        "amount", "currency", "status", "merchant"])
+            w.writerows(rows)
+
+        # 2. Daily metrics
+        metrics = pg.get_records("""
+            SELECT * FROM analytics.daily_transaction_metrics
+            ORDER BY metric_date DESC;
+        """)
+        metrics_path = snapshot_dir / "daily_metrics.csv"
+        with metrics_path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["metric_date", "total_transactions", "total_value",
+                        "successful_count", "failed_count", "success_rate",
+                        "avg_transaction", "active_accounts", "updated_at"])
+            w.writerows(metrics)
+
+        # 3. Quarantine breakdown
+        quarantine = pg.get_records("""
+            SELECT reject_reason, COUNT(*) AS count
+            FROM quarantine.transactions
+            GROUP BY reject_reason ORDER BY 2 DESC;
+        """)
+        q_path = snapshot_dir / "quarantine.csv"
+        with q_path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["reject_reason", "count"])
+            w.writerows(quarantine)
+
+        # 4. Pipeline runs
+        runs = pg.get_records("""
+            SELECT run_id, dag_id, started_at, finished_at, status,
+                   records_extracted, records_loaded, records_quarantined,
+                   duration_seconds
+            FROM ops.pipeline_runs
+            ORDER BY started_at DESC LIMIT 30;
+        """)
+        runs_path = snapshot_dir / "pipeline_runs.csv"
+        with runs_path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["run_id", "dag_id", "started_at", "finished_at", "status",
+                        "records_extracted", "records_loaded",
+                        "records_quarantined", "duration_seconds"])
+            w.writerows(runs)
+
+        result = {
+            "fact_rows": len(rows),
+            "metric_rows": len(metrics),
+            "quarantine_rows": len(quarantine),
+            "run_rows": len(runs),
+        }
+        print(f"[publish_snapshot] {result}")
+        return result
+
+    # ----------------------------------------------------------------
     # Monitoring — finish (runs even if upstream failed)
     # ----------------------------------------------------------------
     @task(trigger_rule="all_done")
@@ -313,22 +392,32 @@ def banking_daily_etl():
     # ----------------------------------------------------------------
     # Wiring
     # ----------------------------------------------------------------
+    # 1. Monitoring starts first
     run_id = start_run()
-    summary = generate_synthetic_data()
-    loaded_raw = load_raw(summary)
-    staged = validate_transform_load(loaded_raw)
+
+    # 2. Core ingestion chain (implicit deps via function args)
+    summary     = generate_synthetic_data()
+    loaded_raw  = load_raw(summary)
+    staged      = validate_transform_load(loaded_raw)
     quarantined = quarantine_rejects(staged)
 
+    # 3. Make generation wait for start_run
     run_id >> summary
-    staged >> quarantined >> dbt_run >> dbt_test
 
+    # 4. dbt chain: quarantine -> dbt_run -> dbt_test
+    quarantined >> dbt_run >> dbt_test
+
+    # 5. Quality + reconciliation chain (after dbt_test)
     qc_result = quality_check(quarantined)
-    recon = reconciliation(qc_result)
-    drift = schema_drift()
-    metrics = compute_metrics(None)
+    recon     = reconciliation(qc_result)
+    drift     = schema_drift()
+    metrics   = compute_metrics(None)
+    snapshot  = publish_snapshot(metrics)
 
-    dbt_test >> qc_result >> recon >> drift >> metrics
-    finish_run(summary, quarantined)
+    dbt_test >> qc_result >> recon >> drift >> metrics >> snapshot
+
+    # 6. Finish runs last (trigger_rule=all_done)
+    snapshot >> finish_run(summary, quarantined)
 
 
 banking_daily_etl()

@@ -29,3 +29,7 @@ data/quarantine/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Keep dashboard snapshots committed — Streamlit Cloud reads them
+!dashboard/data/
+!dashboard/data/**
