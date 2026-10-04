@@ -25,8 +25,11 @@ if project_root not in sys.path:
 from src.extract.fdic import fetch_institutions, summarise_institutions  # noqa: E402
 from src.utils import reliability as rel                                 # noqa: E402
 
-DATA_DIR = Path("/opt/airflow/data")
-SNAPSHOT_DIR = Path("/opt/airflow/dashboard/data/fdic")
+#DATA_DIR = Path("/opt/airflow/data")
+#SNAPSHOT_DIR = Path("/opt/airflow/dashboard/data/fdic")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = PROJECT_ROOT / "data"
+SNAPSHOT_DIR = PROJECT_ROOT / "dashboard" / "data" / "fdic"
 
 
 @dag(

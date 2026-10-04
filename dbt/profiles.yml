@@ -3,7 +3,7 @@ banking_platform:
   outputs:
     dev:
       type: postgres
-      host: postgres
+      host: "{{ env_var('DBT_HOST', 'postgres') }}"
       user: airflow
       password: airflow
       port: 5432

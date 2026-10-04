@@ -35,6 +35,7 @@ jobs:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////tmp/airflow.db
       PYTHONPATH: ${{ github.workspace }}
       FDIC_API_KEY: ${{ secrets.FDIC_API_KEY }}
+      DBT_HOST: localhost
 
     steps:
       - name: Checkout repository

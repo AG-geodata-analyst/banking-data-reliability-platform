@@ -23,9 +23,16 @@ if project_root not in sys.path:
 from src.generators.synthetic_banking import generate_all          # noqa: E402
 from src.utils import reliability as rel                             # noqa: E402
 
-DATA_DIR = Path("/opt/airflow/data")
-DBT_DIR = Path("/opt/airflow/dbt")
-DBT_PROFILES_DIR = "/opt/airflow/dbt"
+#DATA_DIR = Path("/opt/airflow/data")
+#DBT_DIR = Path("/opt/airflow/dbt")
+#DBT_PROFILES_DIR = "/opt/airflow/dbt"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+DBT_DIR = PROJECT_ROOT / "dbt"
+DBT_PROFILES_DIR = PROJECT_ROOT / "dbt"
+DATA_DIR = PROJECT_ROOT / "data"
+DASHBOARD_DIR = PROJECT_ROOT / "dashboard"
+
 
 
 @dag(
@@ -296,7 +303,8 @@ def banking_daily_etl():
         """Write CSV snapshots that Streamlit Cloud can read."""
         import csv
 
-        snapshot_dir = Path("/opt/airflow/dashboard/data/synthetic")
+        # snapshot_dir = Path("/opt/airflow/dashboard/data/synthetic")
+        snapshot_dir = DASHBOARD_DIR / "data" / "synthetic"
         snapshot_dir.mkdir(parents=True, exist_ok=True)
 
         pg = PostgresHook(postgres_conn_id="postgres_banking")
