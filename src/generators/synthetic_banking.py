@@ -8,7 +8,13 @@ from pathlib import Path
 from faker import Faker
 
 fake = Faker()
-OUTPUT_DIR = Path(os.environ.get("DATA_DIR", "/opt/airflow/data")) / "raw"
+# OUTPUT_DIR = Path(os.environ.get("DATA_DIR", "/opt/airflow/data")) / "raw"
+
+# src/generators/synthetic_banking.py → repo root is two levels up
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = PROJECT_ROOT / "data"
+RAW_DIR = DATA_DIR / "raw"
+OUTPUT_DIR = RAW_DIR
 
 N_CUSTOMERS, N_ACCOUNTS, N_TRANSACTIONS = 500, 750, 10_000
 
