@@ -60,14 +60,15 @@ That is exactly what this platform does.
 
 ---
 
-## 🗺️ Four Versions, Four Levels of Maturity
+## 🗺️ Five Versions, Five Levels of Maturity
 
-This project is not four separate projects — it's **one repository that evolves**.
+This project is not five separate projects — it's **one repository that evolves**.
 
 - [x] **Version 1** — Basic reliable ETL pipeline
 - [x] **Version 2** — Trusted data & analytical layer
 - [x] **Version 3** — Production-style reliability platform
 - [x] **Version 4** — Dual pipelines + live Streamlit deployment
+- [x] **Version 5** — Public deployment, CI/CD, and reliability hardening
 
 ### Version 1 — Basic Reliable ETL Pipeline
 
@@ -111,6 +112,19 @@ This project is not four separate projects — it's **one repository that evolve
 - **Bot commits** — the workflow commits fresh snapshots back to `main`
 - **Streamlit Cloud** — public dashboard auto-redeploys on every push
 - **Dual-source UI** — sidebar toggle switches between synthetic and FDIC views
+
+### Version 5 — Public Deployment, CI/CD, and Reliability Hardening
+
+**Question answered:** *Can I ship a reliable, self-healing, publicly-accessible platform?*
+
+- **Fully public stack** — the repository, the workflow, and the dashboard are all reachable without any local setup
+- **Pipeline schema aligned** — `ops.pipeline_runs` includes `dag_id` so every DAG writes its own audit row
+- **Repo-relative paths** — DAGs derive every path from `Path(__file__).resolve().parent.parent`; the same code runs unchanged inside Docker and on the GitHub runner
+- **Portable dbt profile** — `dbt/profiles.yml` reads `DBT_HOST` env var, falling back to `postgres` in Docker and using `localhost` on CI
+- **Correct ordering** — `publish_snapshot` now runs **after** `finish_run`, so committed snapshots capture the final status, duration, and record counts
+- **Slim dashboard environment** — `dashboard/requirements.txt` only ships `streamlit`, `plotly`, and `pandas`, so Streamlit Cloud no longer tries to build Airflow or `psycopg2`
+- **Compact FDIC table** — the institutions table limits itself to key columns so it renders without a horizontal scrollbar
+- **Daily automation verified** — both DAGs (13 + 6 tasks) succeed end-to-end on the GitHub runner and commit corrected CSVs back to `main`
 
 ---
 
@@ -431,6 +445,7 @@ ORDER BY 2 DESC;
 - [x] **Version 2** — dbt + data quality + dimensional model + BI
 - [x] **Version 3** — Monitoring, reconciliation, schema drift, dashboard
 - [x] **Version 4** — Dual pipelines + GitHub Actions + live Streamlit deployment
+- [x] **Version 5** — Public deployment, CI/CD, and reliability hardening
 - [ ] **Future** — Alerting (Slack/email), Docker Hub image, cloud-managed Postgres
 
 ---
