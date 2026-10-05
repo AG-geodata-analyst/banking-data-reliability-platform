@@ -159,5 +159,17 @@ else:  # FDIC
     )
     st.plotly_chart(fig, use_container_width=True)
 
+    #st.subheader("All institutions")
+    #st.dataframe(institutions, use_container_width=True, hide_index=True)
+    
     st.subheader("All institutions")
-    st.dataframe(institutions, use_container_width=True, hide_index=True)
+    # Show only the columns that matter, in a sensible order
+    display_cols = [c for c in [
+        "CERT", "NAME", "CITY", "STALP", "ASSET",
+        "DEP", "NETINC", "ROA", "ROE", "ACTIVE",
+    ] if c in institutions.columns]
+    st.dataframe(
+        institutions[display_cols],
+        use_container_width=True,
+        hide_index=True,
+    )
