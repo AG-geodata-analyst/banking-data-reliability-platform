@@ -149,16 +149,15 @@ def fdic_daily_etl():
         )
 
     # Wiring
-    run_id = start_run()
+    run_id    = start_run()
     extracted = extract_fdic()
     validated = validate_fdic(extracted)
-    snapshot  = publish_snapshot(validated)
     qc        = quality_check(validated)
+    finish    = finish_run(extracted, validated)
+    snapshot  = publish_snapshot(validated)
 
     run_id >> extracted >> validated
-    validated >> snapshot
     validated >> qc
-    finish_run(extracted, validated)
-
+    qc >> finish >> snapshot
 
 fdic_daily_etl()

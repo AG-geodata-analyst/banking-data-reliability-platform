@@ -420,12 +420,13 @@ def banking_daily_etl():
     recon     = reconciliation(qc_result)
     drift     = schema_drift()
     metrics   = compute_metrics(None)
+    finish    = finish_run(summary, quarantined)
     snapshot  = publish_snapshot(metrics)
 
-    dbt_test >> qc_result >> recon >> drift >> metrics >> snapshot
+    dbt_test >> qc_result >> recon >> drift >> metrics
 
-    # 6. Finish runs last (trigger_rule=all_done)
-    snapshot >> finish_run(summary, quarantined)
-
+    # 6. Finish writes final status to ops.pipeline_runs,
+    #    THEN publish_snapshot reads it back and writes the CSV.
+    metrics >> finish >> snapshot
 
 banking_daily_etl()
