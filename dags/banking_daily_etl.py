@@ -379,7 +379,8 @@ def banking_daily_etl():
     # Monitoring — finish (runs even if upstream failed)
     # ----------------------------------------------------------------
     @task(trigger_rule="all_done")
-    def finish_run(generate_summary: dict, quarantine_count: int, **kwargs) -> None:
+    # def finish_run(generate_summary: dict, quarantine_count: int, **kwargs) -> None:
+    def finish_run(generate_summary: dict, quarantine_count: int, qc: dict, **kwargs) -> None:
         dag_run_id = kwargs["run_id"]
 
         # In Airflow 3, the DAG run object is provided via the task context
@@ -393,7 +394,8 @@ def banking_daily_etl():
             dag_run_id=dag_run_id,
             status=status,
             records_extracted=(generate_summary or {}).get("transactions", 0),
-            records_loaded=0,
+            # records_loaded=0,
+            records_loaded=(qc or {}).get("fact_count", 0),
             records_quarantined=quarantine_count or 0,
         )
 
@@ -420,7 +422,8 @@ def banking_daily_etl():
     recon     = reconciliation(qc_result)
     drift     = schema_drift()
     metrics   = compute_metrics(None)
-    finish    = finish_run(summary, quarantined)
+    #finish    = finish_run(summary, quarantined)
+    finish    = finish_run(summary, quarantined, qc_result)
     snapshot  = publish_snapshot(metrics)
 
     dbt_test >> qc_result >> recon >> drift >> metrics
