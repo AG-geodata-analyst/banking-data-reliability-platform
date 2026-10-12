@@ -1,4 +1,4 @@
 reject_reason,count
-orphan_account,141
-negative_amount,106
-duplicate_transaction_id,50
+orphan_account,133
+negative_amount,117
+duplicate_transaction_id,57
