@@ -1,2 +1,2 @@
 run_id,dag_id,started_at,finished_at,status,records_extracted,records_loaded,records_quarantined,duration_seconds
-1,banking_daily_etl,2026-10-20 09:02:29.421965+00:00,2026-10-20 09:02:58.063902+00:00,success,10000,9762,241,28.64
+1,banking_daily_etl,2026-10-21 09:00:59.476253+00:00,2026-10-21 09:01:28.080936+00:00,success,10000,9669,335,28.60
